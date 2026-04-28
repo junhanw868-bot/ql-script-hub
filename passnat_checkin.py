@@ -8,7 +8,7 @@ import os
 import time
 import random
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # ---------------- 统一通知模块加载 ----------------
 hadsend = False
@@ -119,16 +119,23 @@ def run_checkin(account_index, secret_key):
     checkin_resp = do_checkin(secret_key)
     checkin_code = checkin_resp.get("code", -1)
     checkin_msg = checkin_resp.get("msg", "")
+    checkin_data = checkin_resp.get("data", "")
 
     # 判断签到结果
     if checkin_code == 10000:
         status = "✅ 签到成功"
+        checkin_traffic = bytes_to_readable(checkin_data) if checkin_data else "未知"
+        checkin_detail = f"获得流量: {checkin_traffic}"
     elif checkin_code == 6001:
         status = "ℹ️ 今日已签到"
+        checkin_detail = ""
     else:
         status = f"❌ 签到失败 (code={checkin_code})"
+        checkin_detail = ""
 
     print(f"  [{name}] {status}: {checkin_msg}")
+    if checkin_detail:
+        print(f"  [{name}] {checkin_detail}")
 
     # 2. 获取用户信息
     print(f"  [{name}] 正在获取用户信息...")
@@ -154,8 +161,16 @@ def run_checkin(account_index, secret_key):
 
     # 3. 组装通知内容
     lines = [
-        f"【签到结果】{status}",
+        "【签到结果】",
+        f"  {status}",
         f"  {checkin_msg}",
+    ]
+
+    # 签到获得的流量
+    if checkin_detail:
+        lines.append(f"  {checkin_detail}")
+
+    lines.extend([
         "",
         "【登录地区】",
         f"  国家: {region.get('country', 'N/A')}",
@@ -171,7 +186,7 @@ def run_checkin(account_index, secret_key):
         f"  签到流量: {bytes_to_readable(plan.get('check_in_traffic', 0))}",
         f"  附加流量: {bytes_to_readable(plan.get('addon_traffic', 0))}",
         f"  隧道数量: {plan.get('tunnel_count', 0)} / {plan.get('tunnel_limit', 0)}",
-    ]
+    ])
 
     # 套餐状态
     plan_status_map = {1: "正常", 0: "已过期"}
