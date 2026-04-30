@@ -136,7 +136,7 @@ def run_checkin(account_index, secret_key):
     print(f"  [{name}] {status}")
     if checkin_detail:
         print(f"  [{name}] {checkin_detail}")
-    elif checkin_msg and checkin_code != 10000:
+    elif checkin_msg and checkin_code not in [10000, 6001]:
         print(f"  [{name}] {checkin_msg}")
 
     # 2. 获取用户信息
@@ -169,7 +169,7 @@ def run_checkin(account_index, secret_key):
     # 签到详情（成功显示流量，已签到显示原因）
     if checkin_detail:
         lines.append(f"  {checkin_detail}")
-    elif checkin_msg and checkin_code != 10000:
+    elif checkin_msg and checkin_code not in [10000, 6001]:
         lines.append(f"  {checkin_msg}")
 
     lines.extend([
