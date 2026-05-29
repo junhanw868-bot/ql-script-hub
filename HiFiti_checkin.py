@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
  cron: 30 6 * * *
- new Env('HiFiNi签到')
- 来源: https://github.com/anduinnn/HiFiNi-Auto-CheckIn
- 支持 HiFiTi 和 HiFiHi 平台的自动签到、消息推送
+ new Env('HiFiHi签到')
+ 适配 hifihi.com 的自动签到
 """
 
 import os
@@ -29,7 +28,6 @@ random_signin = os.getenv("RANDOM_SIGNIN", "true").lower() == "true"
 
 
 def format_time_remaining(seconds):
-    """格式化时间显示"""
     if seconds <= 0:
         return "立即执行"
     hours, minutes = divmod(seconds, 3600)
@@ -43,7 +41,6 @@ def format_time_remaining(seconds):
 
 
 def wait_with_countdown(delay_seconds, task_name):
-    """带倒计时的随机延迟等待"""
     if delay_seconds <= 0:
         return
     print(f"{task_name} 需要等待 {format_time_remaining(delay_seconds)}")
@@ -57,7 +54,6 @@ def wait_with_countdown(delay_seconds, task_name):
 
 
 def notify_user(title, content):
-    """统一通知函数"""
     if hadsend:
         try:
             send(title, content)
@@ -68,215 +64,130 @@ def notify_user(title, content):
         print(f"📢 {title}\n📄 {content}")
 
 
-class HifiniCheckIn:
+class HifihiCheckIn:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "User-Agent": "Mozilla/5.0 (Linux; Android 16; RMX3800 Build/UKQ1.231108.001) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/131.0.6778.200 Mobile Safari/537.36",
+            "Accept": "text/plain, */*; q=0.01",
+            "Accept-Language": "zh-CN,zh-HK;q=0.9,zh;q=0.8,en-US;q=0.7,en;q=0.6",
+            "X-Requested-With": "XMLHttpRequest",
+            "Origin": "https://hifihi.com",
+            "Referer": "https://hifihi.com/my.htm",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
         }
         self.results = []
 
-        # Cookie 解析 - 使用换行分隔多账号
-        # HiFiTi_COOKIE 对应原来项目的 COOKIE
-        HiFiTi_COOKIE_env = os.getenv("HiFiTi_COOKIE", "")
-        HIFIHI_COOKIE_env = os.getenv("HIFIHI_COOKIE", "")
+        # 从环境变量读取 Cookie，支持多账号（换行分隔）
+        cookie_env = os.getenv("HIFIHI_COOKIE", "")
+        self.cookies = [c.strip() for c in cookie_env.replace('\r\n', '\n').split('\n') if c.strip()]
 
-        self.cookies = [c.strip() for c in HiFiTi_COOKIE_env.replace('\r\n', '\n').split('\n') if c.strip()]
-        self.hifihi_cookies = [c.strip() for c in HIFIHI_COOKIE_env.replace('\r\n', '\n').split('\n') if c.strip()]
-
-        # 统计
         self.success_count = 0
         self.fail_count = 0
-        self.total_accounts = len(self.cookies) + len(self.hifihi_cookies)
 
     def parse_user_id(self, cookie):
-        """从Cookie中提取用户ID"""
-        match = re.search(r"cloudmusic\.net=([^;]+)", cookie)
+        """从Cookie中提取用户ID（取 bbs_sid 前8位）"""
+        match = re.search(r" bbs_sid=([^;]+)", cookie)
         if match:
             return match.group(1)[:8]
-        # 备用: 尝试从cookie值本身提取
-        if "=" in cookie:
-            value = cookie.split("=")[1].split(";")[0]
-            if len(value) > 8:
-                return value[:8]
+        match = re.search(r"^bbs_sid=([^;]+)", cookie)
+        if match:
+            return match.group(1)[:8]
         return "unknown"
 
-    def get_formhash(self, url, referer):
-        """获取表单哈希值"""
-        try:
-            self.session.headers["Referer"] = referer
-            response = self.session.get(url, timeout=15)
-            # 尝试多种formhash匹配模式
-            patterns = [
-                r'name="formhash" value="([^"]+)"',
-                r'formhash=([a-zA-Z0-9]+)',
-                r'"formhash":"([^"]+)"',
-            ]
-            for pattern in patterns:
-                match = re.search(pattern, response.text)
-                if match:
-                    return match.group(1)
-        except Exception as e:
-            print(f"获取formhash失败: {e}")
-        return ""
-
-    def sign_hifiti(self, cookie):
-        """HiFiTi 签到"""
-        self.session.headers["Referer"] = "https://www.hifiti.com/"
+    def sign_hifihi(self, cookie_str):
+        """HiFiHi 签到 - POST 空 body，靠 Cookie 验证"""
+        # 清空旧 cookie
+        self.session.cookies.clear()
         
-        # 设置Cookie
-        try:
-            cookie_value = cookie.split("=")[1].split(";")[0] if "=" in cookie else cookie
-            self.session.cookies.set("cloudmusic.net", cookie_value)
-        except:
-            pass
-
-        # 先访问首页获取formhash
-        formhash = self.get_formhash("https://www.hifiti.com/", "https://www.hifiti.com/")
-        if not formhash:
-            return False, "获取formhash失败"
+        # 解析并设置 Cookie
+        for item in cookie_str.split(';'):
+            item = item.strip()
+            if '=' in item:
+                key, value = item.split('=', 1)
+                self.session.cookies.set(key.strip(), value.strip(), domain='hifihi.com')
 
         try:
             response = self.session.post(
-                "https://www.hifiti.com/plugin.php?id=sign",
-                data={
-                    "formhash": formhash,
-                    "submit": "1"
-                },
+                "https://hifihi.com/sg_sign.htm",
+                data="",  # 空 body
                 timeout=15
             )
             
             response_text = response.text
             
+            # 根据返回内容判断结果（你需要根据实际返回调整关键词）
             if "签到成功" in response_text:
                 return True, "签到成功"
-            elif "已签到" in response_text or "您今日签到已领取" in response_text:
+            elif "已签到" in response_text or "今日已签" in response_text:
                 return False, "今日已签到"
-            elif "签到失败" in response_text:
+            elif "失败" in response_text:
                 return False, "签到失败"
             else:
-                # 尝试解析返回的消息
-                msg_match = re.search(r'(?<!已)签到[^\x00-\xff]+', response_text)
-                if msg_match:
-                    return False, msg_match.group()
-                return False, f"签到结果未知: {response.status_code}"
-                
-        except Exception as e:
-            return False, f"签到异常: {str(e)}"
-
-    def sign_hifihi(self, cookie):
-        """HiFiHi 签到"""
-        self.session.headers["Referer"] = "https://hifihi.com/"
-        
-        # 先访问首页获取formhash
-        formhash = self.get_formhash("https://hifihi.com/", "https://hifihi.com/")
-        if not formhash:
-            return False, "获取formhash失败"
-
-        try:
-            # 设置Cookie
-            cookie_value = cookie.split("=")[1].split(";")[0] if "=" in cookie else cookie
-            self.session.cookies.set("cloudmusic.net", cookie_value)
-            
-            response = self.session.post(
-                "https://hifihi.com/plugin.php?id=sign",
-                data={
-                    "formhash": formhash,
-                    "submit": "1"
-                },
-                timeout=15
-            )
-            
-            response_text = response.text
-            
-            if "签到成功" in response_text:
-                return True, "签到成功"
-            elif "已签到" in response_text or "您今日签到已领取" in response_text:
-                return False, "今日已签到"
-            elif "签到失败" in response_text:
-                return False, "签到失败"
-            else:
-                msg_match = re.search(r'(?<!已)签到[^\x00-\xff]+', response_text)
-                if msg_match:
-                    return False, msg_match.group()
-                return False, f"签到结果未知: {response.status_code}"
+                # 如果返回是 JSON，尝试解析
+                try:
+                    import json
+                    data = json.loads(response_text)
+                    if data.get("code") == 0 or data.get("status") == 1:
+                        return True, "签到成功"
+                    else:
+                        return False, f"签到返回: {data}"
+                except:
+                    # 返回内容较短时直接打印
+                    return False, f"返回: {response_text[:100]}"
                 
         except Exception as e:
             return False, f"签到异常: {str(e)}"
 
     def run(self):
-        """执行签到任务"""
         print("=" * 50)
-        print("开始 HiFiNi 签到任务")
+        print("开始 HiFiHi 签到任务")
         print("=" * 50)
 
+        if not self.cookies:
+            print("❌ 未配置 HIFIHI_COOKIE，跳过")
+            return 1
+
         # 随机延迟
-        if random_signin and self.total_accounts > 1:
+        if random_signin and len(self.cookies) > 0:
             delay_seconds = random.randint(0, min(max_random_delay, 3600))
             if delay_seconds > 0:
                 print(f"🎲 随机模式: 延迟 {format_time_remaining(delay_seconds)} 后开始")
-                wait_with_countdown(delay_seconds, "HiFiNi签到")
+                wait_with_countdown(delay_seconds, "HiFiHi签到")
 
-        print(f"📝 共发现 {len(self.cookies)} 个 HiFiTi 账号, {len(self.hifihi_cookies)} 个 HiFiHi 账号")
+        print(f"📝 共发现 {len(self.cookies)} 个 HiFiHi 账号")
 
-        # HiFiTi 签到
-        if self.cookies:
-            print("\n[HiFiTi] 开始签到...")
-            for i, cookie in enumerate(self.cookies):
-                user_id = self.parse_user_id(cookie)
-                print(f" 账号 {i+1}/{len(self.cookies)} ({user_id}): ", end="")
-                success, msg = self.sign_hifiti(cookie)
-                print(msg)
-                self.results.append(f"HiFiTi 账号{i+1}({user_id}): {msg}")
-                if success:
-                    self.success_count += 1
-                else:
-                    self.fail_count += 1
-                # 账号间随机延迟
-                if i < len(self.cookies) - 1:
-                    time.sleep(random.uniform(1, 3))
-        else:
-            print("\n[HiFiTi] 未配置Cookie，跳过")
+        for i, cookie in enumerate(self.cookies):
+            user_id = self.parse_user_id(cookie)
+            print(f" 账号 {i+1}/{len(self.cookies)} ({user_id}): ", end="")
+            success, msg = self.sign_hifihi(cookie)
+            print(msg)
+            self.results.append(f"HiFiHi 账号{i+1}({user_id}): {msg}")
+            if success:
+                self.success_count += 1
+            else:
+                self.fail_count += 1
+            
+            if i < len(self.cookies) - 1:
+                time.sleep(random.uniform(1, 3))
 
-        # HiFiHi 签到
-        if self.hifihi_cookies:
-            print("\n[HiFiHi] 开始签到...")
-            for i, cookie in enumerate(self.hifihi_cookies):
-                user_id = self.parse_user_id(cookie)
-                print(f" 账号 {i+1}/{len(self.hifihi_cookies)} ({user_id}): ", end="")
-                success, msg = self.sign_hifihi(cookie)
-                print(msg)
-                self.results.append(f"HiFiHi 账号{i+1}({user_id}): {msg}")
-                if success:
-                    self.success_count += 1
-                else:
-                    self.fail_count += 1
-                # 账号间随机延迟
-                if i < len(self.hifihi_cookies) - 1:
-                    time.sleep(random.uniform(1, 3))
-        else:
-            print("\n[HiFiHi] 未配置Cookie，跳过")
-
-        # 汇总结果
+        # 汇总
         print("\n" + "=" * 50)
         print("签到结果汇总:")
         for result in self.results:
             print(f" - {result}")
 
-        # 发送通知
         if self.results:
             summary_msg = f"成功: {self.success_count} / 失败: {self.fail_count}\n\n" + "\n".join([f"• {r}" for r in self.results])
-            notify_user("HiFiNi 签到汇总", summary_msg)
+            notify_user("HiFiHi 签到汇总", summary_msg)
 
         print("=" * 50)
-        
-        # 返回状态码供青龙面板识别
         return 0 if self.fail_count == 0 else 1
 
 
 if __name__ == "__main__":
-    checkin = HifiniCheckIn()
+    checkin = HifihiCheckIn()
     exit_code = checkin.run()
     exit(exit_code)
