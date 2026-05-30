@@ -108,7 +108,7 @@ def notify_user(title, content):
         print(f"📢 {title}\n📄 {content}")
 
 def update_qinglong_env_database(var_name, new_value, old_value=None):
-    """通过数据库直接更新青龙面板环境变量"""
+    """通过数据库直接更新青龙面板环境变量（精确匹配旧值，不影响其他账号）"""
     try:
         print("🔍 尝试通过数据库更新青龙面板环境变量...")
         
@@ -138,34 +138,53 @@ def update_qinglong_env_database(var_name, new_value, old_value=None):
         cursor.execute("PRAGMA table_info(envs)")
         columns = [column[1] for column in cursor.fetchall()]
         
-        # 查询现有环境变量
-        cursor.execute("SELECT * FROM envs WHERE name = ?", (var_name,))
-        existing_env = cursor.fetchone()
+        # 精确匹配旧值，查找目标记录（只取第一条匹配）
+        existing_env = None
+        record_id = None
+        if old_value:
+            cursor.execute(
+                "SELECT rowid FROM envs WHERE name = ? AND value = ? LIMIT 1",
+                (var_name, old_value)
+            )
+            row = cursor.fetchone()
+            if row:
+                record_id = row[0]
+                existing_env = True
+                print(f"🎯 精确匹配到旧token记录 (rowid={record_id})")
         
         if existing_env:
-            # 更新现有环境变量（兼容不同版本的字段）
+            # 更新现有环境变量（只更新匹配到的那一条）
             print(f"🔄 更新现有环境变量: {var_name}")
             if 'updated_at' in columns:
                 current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                cursor.execute("UPDATE envs SET value = ?, updated_at = ? WHERE name = ?", 
-                             (new_value, current_time, var_name))
+                cursor.execute(
+                    "UPDATE envs SET value = ?, updated_at = ? WHERE rowid = ?",
+                    (new_value, current_time, record_id)
+                )
             else:
-                cursor.execute("UPDATE envs SET value = ? WHERE name = ?", 
-                             (new_value, var_name))
+                cursor.execute(
+                    "UPDATE envs SET value = ? WHERE rowid = ?",
+                    (new_value, record_id)
+                )
         else:
-            # 创建新环境变量
-            print(f"➕ 创建新环境变量: {var_name}")
+            # 未找到旧记录，创建新环境变量（新增账号，不影响已有账号）
+            print(f"➕ 未找到匹配旧记录，创建新环境变量: {var_name}")
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # 新记录状态设为 0（启用），兼容青龙面板标准
+            status_value = 0
             
             if 'updated_at' in columns and 'created_at' in columns:
                 cursor.execute("""
                     INSERT INTO envs (name, value, created_at, updated_at, status) 
                     VALUES (?, ?, ?, ?, ?)
-                """, (var_name, new_value, current_time, current_time, 1))
+                """, (var_name, new_value, current_time, current_time, status_value))
             else:
                 # 简化版本，只插入必要字段
-                cursor.execute("INSERT INTO envs (name, value) VALUES (?, ?)", 
-                             (var_name, new_value))
+                cursor.execute(
+                    "INSERT INTO envs (name, value) VALUES (?, ?)",
+                    (var_name, new_value)
+                )
         
         # 提交更改
         conn.commit()
@@ -179,7 +198,7 @@ def update_qinglong_env_database(var_name, new_value, old_value=None):
         return False
 
 def update_qinglong_env_api(var_name, new_value, old_value=None):
-    """通过青龙面板API更新环境变量"""
+    """通过青龙面板API更新环境变量（精确匹配旧值，不影响其他账号）"""
     try:
         print("🔍 尝试通过青龙面板API更新环境变量...")
         
@@ -230,11 +249,18 @@ def update_qinglong_env_api(var_name, new_value, old_value=None):
             print(f"❌ API返回错误: {envs_data}")
             return False
         
+        # 精确匹配旧值
         existing_env = None
         for env in envs_data.get("data", []):
             if env.get("name") == var_name:
-                existing_env = env
-                break
+                if old_value and env.get("value") == old_value:
+                    existing_env = env
+                    print(f"🎯 精确匹配到旧token记录 (id={env.get('id') or env.get('_id')})")
+                    break
+                elif not old_value:
+                    # 无旧值时兼容原逻辑，取第一条
+                    existing_env = env
+                    break
         
         if existing_env:
             # 更新现有环境变量
@@ -245,15 +271,26 @@ def update_qinglong_env_api(var_name, new_value, old_value=None):
                 "value": new_value,
                 "id": env_id
             }
-            response = requests.put(f"{api_base}/api/envs", headers=headers, json=update_data, timeout=10)
+            response = requests.put(
+                f"{api_base}/api/envs",
+                headers=headers,
+                json=update_data,
+                timeout=10
+            )
         else:
-            # 创建新环境变量
-            print(f"➕ 创建新环境变量: {var_name}")
+            # 未找到旧记录，创建新环境变量（新增账号，不影响已有账号）
+            print(f"➕ 未找到匹配旧记录，创建新环境变量: {var_name}")
             create_data = {
                 "name": var_name,
-                "value": new_value
+                "value": new_value,
+                "status": 0
             }
-            response = requests.post(f"{api_base}/api/envs", headers=headers, json=create_data, timeout=10)
+            response = requests.post(
+                f"{api_base}/api/envs",
+                headers=headers,
+                json=create_data,
+                timeout=10
+            )
         
         if response.status_code == 200:
             result = response.json()
@@ -307,7 +344,12 @@ def update_qinglong_env_cmd(var_name, new_value, old_value=None):
                 print(f"❌ 更新失败: {result.stderr}")
                 # 如果更新失败，尝试删除后重新添加
                 print("🔄 尝试删除后重新添加...")
-                subprocess.run(['ql', 'envs', 'rm', var_name], capture_output=True, text=True, timeout=10)
+                subprocess.run(
+                    ['ql', 'envs', 'rm', var_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
         
         # 添加新环境变量
         print(f"➕ 添加环境变量: {var_name}")
@@ -341,15 +383,16 @@ def update_environment_variable(var_name, new_value, old_value=None):
         if os.path.exists('/ql'):
             print("🐉 检测到青龙面板环境，尝试多种更新方式...")
             
-            # 方法1: 数据库直接更新（最可靠）
+            # 方法1: 数据库直接更新（最可靠，支持精确匹配）
             if update_qinglong_env_database(var_name, new_value, old_value):
                 return True
             
-            # 方法2: API更新
+            # 方法2: API更新（支持精确匹配）
             if update_qinglong_env_api(var_name, new_value, old_value):
                 return True
             
-            # 方法3: ql命令更新
+            # 方法3: ql命令更新（不支持精确匹配，多账号环境下可能误操作，最后尝试）
+            print("⚠️ 数据库/API方式均失败，尝试ql命令（多账号环境下可能覆盖其他账号）...")
             if update_qinglong_env_cmd(var_name, new_value, old_value):
                 return True
             
@@ -437,6 +480,151 @@ def update_local_env(var_name, new_value):
         print(f"⚠️ 本地环境处理失败: {e}")
         return False
 
+def get_all_aliyun_tokens():
+    """获取所有阿里云盘账号的 refresh_token
+    青龙环境下优先读取数据库/API获取多账号（支持自动拆分模式），
+    非青龙环境仍回退到原换行分割方式。
+    """
+    var_name = "ALIYUN_REFRESH_TOKEN"
+    
+    # 青龙面板环境检测
+    if os.path.exists('/ql'):
+        print("🐉 检测到青龙面板环境，尝试读取多账号配置...")
+        
+        # 方法1: 数据库读取（支持自动拆分模式）
+        try:
+            db_paths = [
+                "/ql/data/db/database.sqlite",
+                "/ql/db/database.sqlite",
+                "/ql/data/database.sqlite"
+            ]
+            
+            db_path = None
+            for path in db_paths:
+                if os.path.exists(path):
+                    db_path = path
+                    break
+            
+            if db_path:
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+                
+                # 先查标准启用状态 (status=0)
+                cursor.execute(
+                    "SELECT value FROM envs WHERE name = ? AND status = 0",
+                    (var_name,)
+                )
+                rows = cursor.fetchall()
+                
+                if not rows:
+                    # 兼容旧数据或特殊版本 (status=1)
+                    cursor.execute(
+                        "SELECT value FROM envs WHERE name = ? AND status = 1",
+                        (var_name,)
+                    )
+                    rows = cursor.fetchall()
+                
+                if not rows:
+                    # 最后尝试不限制状态
+                    cursor.execute(
+                        "SELECT value FROM envs WHERE name = ?",
+                        (var_name,)
+                    )
+                    rows = cursor.fetchall()
+                
+                conn.close()
+                
+                if rows:
+                    tokens = []
+                    for row in rows:
+                        val = row[0]
+                        if not val:
+                            continue
+                        val = val.strip()
+                        # 兼容单条记录多账号合并存储（换行分隔）
+                        if '\n' in val or '\r\n' in val:
+                            sub_tokens = [
+                                t.strip()
+                                for t in val.replace('\r\n', '\n').split('\n')
+                                if t.strip()
+                            ]
+                            tokens.extend(sub_tokens)
+                        else:
+                            tokens.append(val)
+                    if tokens:
+                        print(f"📍 从数据库读取到 {len(tokens)} 个账号")
+                        return tokens
+        except Exception as e:
+            print(f"⚠️ 数据库读取失败: {e}")
+        
+        # 方法2: API读取（支持自动拆分模式）
+        try:
+            config_paths = [
+                "/ql/config/auth.json",
+                "/ql/data/config/auth.json",
+                "/ql/config/config.json"
+            ]
+            
+            config_data = None
+            for config_path in config_paths:
+                if os.path.exists(config_path):
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        config_data = json.load(f)
+                    break
+            
+            if config_data:
+                token = config_data.get('token') or config_data.get('auth', {}).get('token')
+                if token:
+                    api_base = "http://localhost:5700"
+                    headers = {
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json"
+                    }
+                    
+                    response = requests.get(
+                        f"{api_base}/api/envs",
+                        headers=headers,
+                        timeout=10
+                    )
+                    if response.status_code == 200:
+                        envs_data = response.json()
+                        if envs_data.get("code") == 200:
+                            tokens = []
+                            for env in envs_data.get("data", []):
+                                if env.get("name") == var_name:
+                                    # 兼容 status: 0 或 1 都视为有效
+                                    status = env.get("status", 0)
+                                    if status in (0, 1):
+                                        val = env.get("value", "")
+                                        if val:
+                                            val = val.strip()
+                                            if '\n' in val or '\r\n' in val:
+                                                sub_tokens = [
+                                                    t.strip()
+                                                    for t in val.replace('\r\n', '\n').split('\n')
+                                                    if t.strip()
+                                                ]
+                                                tokens.extend(sub_tokens)
+                                            else:
+                                                tokens.append(val)
+                            if tokens:
+                                print(f"📍 从API读取到 {len(tokens)} 个账号")
+                                return tokens
+        except Exception as e:
+            print(f"⚠️ API读取失败: {e}")
+    
+    # 方法3: 环境变量（回退方案，支持换行分割）
+    aliyun_tokens = os.getenv(var_name, "")
+    if not aliyun_tokens:
+        return []
+    
+    tokens = [
+        token.strip()
+        for token in aliyun_tokens.replace('\r\n', '\n').split('\n')
+        if token.strip()
+    ]
+    return tokens
+
 class AliYun:
     name = "阿里云盘"
 
@@ -504,7 +692,11 @@ class AliYun:
                     # 尝试自动更新环境变量
                     if auto_update_token:
                         print("🤖 正在尝试自动更新环境变量...")
-                        success = update_environment_variable("ALIYUN_REFRESH_TOKEN", new_refresh_token, self.refresh_token)
+                        success = update_environment_variable(
+                            "ALIYUN_REFRESH_TOKEN",
+                            new_refresh_token,
+                            self.refresh_token
+                        )
                         
                         if success:
                             print("✅ 环境变量自动更新成功")
@@ -615,7 +807,7 @@ class AliYun:
                     error_msg = error_detail.get("message", f"HTTP {response.status_code}")
                 except:
                     error_msg = f"签到请求失败，HTTP状态码: {response.status_code}"
-                return error_msg, False
+                return error_msg, False, ""
                 
             result = response.json()
             
@@ -623,7 +815,7 @@ class AliYun:
             if not result.get("success", False):
                 error_msg = result.get("message", "签到失败")
                 print(f"❌ 签到失败: {error_msg}")
-                return error_msg, False
+                return error_msg, False, ""
             
             sign_days = result.get("result", {}).get("signInCount", 0)
             print(f"📅 累计签到: {sign_days}天")
@@ -777,11 +969,11 @@ def main():
             print(f"🎲 随机延迟: {format_time_remaining(delay_seconds)}")
             wait_with_countdown(delay_seconds, "阿里云盘签到")
     
-    # 获取refresh_token配置
-    aliyun_tokens = os.getenv("ALIYUN_REFRESH_TOKEN", "")
+    # 获取所有账号的 refresh_token（支持青龙多账号自动拆分）
+    tokens = get_all_aliyun_tokens()
     
-    if not aliyun_tokens:
-        error_msg = """❌ 未找到ALIYUN_REFRESH_TOKEN环境变量
+    if not tokens:
+        error_msg = """❌ 未找到 ALIYUN_REFRESH_TOKEN 环境变量
 
 🔧 获取refresh_token的方法:
 1. 打开阿里云盘网页版: https://www.aliyundrive.com/
@@ -790,17 +982,12 @@ def main():
 4. 切换到Application标签页
 5. 在左侧找到Local Storage → https://www.aliyundrive.com
 6. 找到token项，复制refresh_token的值
-7. 在青龙面板中添加环境变量ALIYUN_REFRESH_TOKEN
-
-💡 提示: refresh_token通常很长，以字母开头"""
+7. 在青龙面板中添加环境变量 ALIYUN_REFRESH_TOKEN（支持多账号自动拆分或换行分隔）"""
         
         print(error_msg)
         notify_user("阿里云盘签到失败", error_msg)
         return
 
-    # 支持多账号（使用换行符分割，支持token中包含&符号）
-    tokens = [token.strip() for token in aliyun_tokens.replace('\r\n', '\n').split('\n') if token.strip()]
-    
     print(f"📝 共发现 {len(tokens)} 个账号")
     
     success_count = 0
